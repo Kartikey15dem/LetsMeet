@@ -1,0 +1,6 @@
+{
+  "client_id": "89191d4f-68d2-4049-a890-3b0ae615eaa0",
+  "redirect_uri": "https://introfire-b1b78.firebaseapp.com/__/auth/handler",
+  "broker_redirect_uri_registered": false,
+  "account_mode": "SINGLE"
+}
