@@ -6,15 +6,18 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.myworldtech.meet.data.auth.AuthService
 import com.myworldtech.meet.presentation.viewmodels.AuthViewModel
+import com.myworldtech.meet.presentation.viewmodels.VideoCallViewModel
 
 @Composable
 fun AppNavigation(
+    videoCallViewModel : VideoCallViewModel,
     authViewModel: AuthViewModel,
     authService: AuthService,
+    startService: () -> Unit
 ) {
     val navController = rememberNavController()
 
-    NavHost(navController = navController, startDestination = "login") {
+    NavHost(navController = navController, startDestination = "home") {
         // Login Screen
         composable("login") {
             LoginScreen(
@@ -41,7 +44,16 @@ fun AppNavigation(
         }
         // Home Screen
         composable("home") {
-            HomeScreen()
+            HomeScreen(
+                onClick = { navController.navigate("videoCall")
+                          startService()
+                          },
+            )
+        }
+        composable ("videoCall") {
+            VideoCallScreen(
+                viewModel = videoCallViewModel,
+            )
         }
     }
 }

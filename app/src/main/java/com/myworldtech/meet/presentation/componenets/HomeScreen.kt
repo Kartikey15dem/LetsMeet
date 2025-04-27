@@ -7,12 +7,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 
 @Composable
-fun HomeScreen(modifier: Modifier = Modifier) {
+fun HomeScreen(
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
     Column {
-        Button(onClick = { /* Handle button click */ }) {
+        Button(onClick = {}) {
             Text(text = "New Meeting")
         }
-        Button(onClick = { /* Handle button click */ }) {
+        Button(onClick = onClick) {
             Text(text = "Join Meeting")
         }
     }

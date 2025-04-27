@@ -1,53 +1,81 @@
 package com.myworldtech.meet.presentation.viewmodels
 
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
+import android.os.IBinder
 import androidx.compose.runtime.mutableStateOf
-import androidx.lifecycle.ViewModel
-import com.myworldtech.meet.presentation.model.Participant
 import androidx.compose.runtime.State
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.myworldtech.meet.domain.service.VideoCallService
+import com.myworldtech.meet.presentation.model.Participant
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
+import org.webrtc.AudioTrack
+import org.webrtc.VideoTrack
+import java.lang.ref.WeakReference
 
 class VideoCallViewModel : ViewModel() {
     private val _participants = mutableStateOf<List<Participant>>(emptyList())
     val participants: State<List<Participant>> = _participants
 
-    // Socket client reference (initialize this in your ViewModel setup)
-//    private lateinit var socketClient: SocketClient
+    private val _roomId = mutableStateOf<String>("")
+    val roomId: State<String> = _roomId
 
-    init {
-        // Connect to socket and set up listeners
-        setupSocketConnection()
-    }
+    // Service connection
+    private var _videoCallServiceRef: WeakReference<VideoCallService?> = WeakReference(null)
+    private val videoCallService: VideoCallService?
+        get() = _videoCallServiceRef.get()
 
-    private fun setupSocketConnection() {
-        // Initialize socket client
-        // socketClient = YourSocketClient()
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            val binder = service as VideoCallService.VideoCallBinder
+            val videoCallService = binder.getService()
+            _videoCallServiceRef = WeakReference(videoCallService)
 
-        // Listen for audio/video toggle events
-//        socketClient.on("participant_audio_toggled") { data ->
-//            val participantId = data.getString("participantId")
-//            val enabled = data.getBoolean("enabled")
-//            updateParticipantAudio(participantId, enabled)
-//        }
-//
-//        socketClient.on("participant_video_toggled") { data ->
-//            val participantId = data.getString("participantId")
-//            val enabled = data.getBoolean("enabled")
-//            updateParticipantVideo(participantId, enabled)
-//        }
-    }
+            // Start collecting the participants from the service
+            viewModelScope.launch {
+                videoCallService.participants.collectLatest { serviceParticipants ->
+                    _participants.value = serviceParticipants
+                }
+            }
+        }
 
-    // Update methods called by socket events
-    fun updateParticipantAudio(id: String, enabled: Boolean) {
-        updateParticipant(id) { it.copy(audioEnabled = enabled) }
-    }
-
-    fun updateParticipantVideo(id: String, enabled: Boolean) {
-        updateParticipant(id) { it.copy(videoEnabled = enabled) }
-    }
-
-    // Helper to update a specific participant
-    private fun updateParticipant(id: String, transform: (Participant) -> Participant) {
-        _participants.value = _participants.value.map {
-            if (it.id == id) transform(it) else it
+        override fun onServiceDisconnected(name: ComponentName?) {
+            _videoCallServiceRef = WeakReference(null)
         }
     }
+
+    // This method is no longer needed since we now collect from the flow
+    // fun refreshParticipantsFromService() {
+    //     videoCallService?.let {
+    //         _participants.value = it.getParticipants()
+    //     }
+    // }
+
+    fun bindToService(context: Context) {
+        val intent = Intent(context, VideoCallService::class.java)
+        context.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+    }
+
+    fun unbindFromService(context: Context) {
+        try {
+            context.unbindService(serviceConnection)
+        } catch (e: IllegalArgumentException) {
+            // Service not bound, ignore
+        }
+    }
+
+    fun setRoomId(roomId: String) {
+        _roomId.value = roomId
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        // Don't call closeConnection here as the service should keep running
+    }
+
+    // Remove these commented out methods completely
 }

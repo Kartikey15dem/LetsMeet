@@ -67,6 +67,15 @@ dependencies {
     implementation (libs.androidx.lifecycle.viewmodel.ktx)
     implementation (libs.play.services.auth)
     implementation(libs.androidx.navigation.compose)
+    // Socket.IO client for Android
+    implementation (libs.socket.io.client)
+
+
+
+    // Kotlin coroutines for asynchronous operations
+    implementation (libs.kotlinx.coroutines.android)
 //    implementation(libs.msal)
+    implementation(libs.libmediasoup.android)
+    implementation(libs.libwebrtc.ktx)
 
 }
