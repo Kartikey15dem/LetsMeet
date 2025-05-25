@@ -12,12 +12,15 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
 
 
     <application
         android:name=".MyApp"
         android:allowBackup="true"
+        android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
@@ -26,10 +29,12 @@
         android:supportsRtl="true"
         android:usesCleartextTraffic="true"
         android:theme="@style/Theme.Meet"
+        android:hardwareAccelerated="true"
         tools:targetApi="31">
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:supportsPictureInPicture="true"
             android:theme="@style/Theme.Meet">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -39,6 +44,10 @@
         </activity>
         <service
             android:name=".domain.service.VideoCallService"
+            android:exported="false"
+            android:foregroundServiceType="camera|microphone" />
+        <service
+            android:name=".domain.service.ShareScreenService"
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
     </application>

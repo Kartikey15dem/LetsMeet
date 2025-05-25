@@ -1,4 +1,4 @@
-package com.myworldtech.meet.presentation.componenets
+package com.myworldtech.meet.presentation.componenets.auth
 
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult

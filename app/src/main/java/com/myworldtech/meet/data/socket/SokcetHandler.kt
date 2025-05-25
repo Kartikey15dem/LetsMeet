@@ -6,6 +6,7 @@ import android.media.MediaRecorder.AudioSource
 import android.preference.PreferenceManager
 import android.text.TextUtils
 import android.util.Log
+import com.myworldtech.meet.data.preferences.getUserInfo
 import com.myworldtech.meet.presentation.viewmodels.VideoCallViewModel
 import io.github.crow_misia.webrtc.option.MediaConstraintsOption
 import io.socket.client.IO
@@ -35,6 +36,8 @@ import io.github.crow_misia.webrtc.RTCLocalVideoManager
 import io.socket.client.Ack
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -62,10 +65,9 @@ class SocketHandler(
     private lateinit var localVideoManager: RTCLocalVideoManager
     private val rtcConfig = PeerConnection.RTCConfiguration(emptyList())
     private var cameraName = "front"
-    private var isProduce = true
-    private var isConsume = true
     private var isUseDataChannel = true
-    private lateinit var myPeerId: String
+
+    private var myPeerId = ""
     private var micProducer: Producer? = null
 
     private var camProducer: Producer? = null
@@ -73,26 +75,68 @@ class SocketHandler(
     private lateinit var  peerConnectionFactory: PeerConnectionFactory
     private lateinit var mediaConstraintsOption: MediaConstraintsOption
     private lateinit var nProducers : String
+    private lateinit var videoProducerId : String
+    private lateinit var audioProducerId: String
+    private var isSpeakerAudio = false
 
-    fun setupSocketConnection(roomId: String) = coroutineScope.launch {
-        try {
-            initializeSocket()
-            val roomData = joinRoom(roomId)
-            initializeMediaComponents()
-            setupMediaSoupDevice(roomData)
-            createTransports()
-            enableMediaIfPossible()
-            consumeRemoteProducers()
-            consumeNewProducer()
-        } catch (e: Exception) {
-            Log.e("socket", "Setup failed", e)
-            // Proper error handling - notify UI, etc.
+    fun toggleSpeakerAudio(isEnabled: Boolean){
+        isSpeakerAudio = isEnabled
+    }
+
+    fun toggleCamera(isEnabled: Boolean) {
+        coroutineScope.launch {
+            if (isEnabled) {
+                serviceCallback.toggleParticipantVideo(myPeerId,true)
+                resumeVideo()
+            } else {
+                serviceCallback.toggleParticipantVideo(myPeerId,false)
+                pauseVideo()
+            }
         }
+    }
+
+    fun toggleMic(isEnabled: Boolean) {
+        coroutineScope.launch {
+            if (isEnabled) {
+                serviceCallback.toggleParticipantAudio(myPeerId,true)
+                resumeAudio()
+            } else {
+                serviceCallback.toggleParticipantAudio(myPeerId,false)
+                pauseAudio()
+            }
+        }
+    }
+
+    suspend fun setupSocketConnection(roomId: String,peerId: String,isHost: Boolean): Boolean {
+
+            try {
+                myPeerId = peerId
+                initializeSocket()
+                val roomData = joinRoom(roomId,isHost)
+                if(roomData.has("approved")) return false
+                initializeMediaComponents()
+                setupMediaSoupDevice(roomData)
+                createTransports()
+                removeParticipant()
+                enableMediaIfPossible()
+                consumeRemoteProducers()
+                consumeNewProducer()
+                pauseProducerOfPeer()
+                resumeProducerOfPeer()
+                receiveMessage()
+                if (isHost) handlePeerRequest()
+
+            } catch (e: Exception) {
+                Log.e("socket", "Setup failed", e)
+                return false
+            }
+        return true
     }
 
     private suspend fun initializeSocket() {
         try {
-            socket = IO.socket("http://192.168.61.109:3000")
+
+            socket = IO.socket("http://192.168.29.235:3000")
             socket.connect()
             Log.d("socket", "Socket connected: ${socket.connected()}")
 
@@ -108,22 +152,27 @@ class SocketHandler(
         }
     }
 
-    private suspend fun joinRoom(roomId: String): JSONObject {
+    private suspend fun joinRoom(roomId: String,isHost: Boolean): JSONObject {
         val roomRequest = JSONObject().put("roomId", roomId)
+            .put("peerId", myPeerId)
+            .put("isHost", isHost)
         socket.emit("join-room", roomRequest)
         Log.d("socket", "Socket join-room: $roomRequest")
-        return socket.awaitEvent("room-joined")
+        val approved = socket.awaitEvent("join-approved")
+        Log.d("socket","approved : ${approved.getBoolean("approved")}")
+        return if(approved.getBoolean("approved")) socket.awaitEvent("room-joined") else approved
+
     }
 
     private fun initializeMediaComponents() {
         // Camera setup
-        camCapturer = (if (isProduce) {
+        camCapturer =
             CameraCapturerFactory.create(
                 context,
                 fixedResolution = false,
                 preferenceFrontCamera = "front" == cameraName
-            )
-        } else null)!!
+            )!!
+
 
         // Create media constraints
         mediaConstraintsOption = MediaConstraintsOption().also {
@@ -139,7 +188,7 @@ class SocketHandler(
             )
             it.enableVideoDownstream(PeerConnectionUtils.eglContext)
             it.audioSource = AudioSource.VOICE_COMMUNICATION
-            camCapturer?.also { capturer ->
+            camCapturer.also { capturer ->
                 it.enableVideoUpstream(capturer, PeerConnectionUtils.eglContext)
             }
         }
@@ -154,9 +203,10 @@ class SocketHandler(
     private suspend fun setupMediaSoupDevice(roomData: JSONObject) {
         val routerRtpCapabilities = roomData.getJSONObject("routerRtpCapabilities").toString()
         val producers = roomData.getJSONArray("producers")
-        myPeerId = roomData.getString("peerId")
         Log.d("socket", "myPeerId $myPeerId")
-        serviceCallback.addParticipant(Participant(myPeerId, "You"))
+        coroutineScope.launch(Dispatchers.Main) {
+            serviceCallback.addMyParticipant(Participant(id = myPeerId, name = "You", photoUrl = getUserInfo(context).second))
+        }
         nProducers = producers.toString()
         val peers = roomData.getJSONObject("peers")
         val jsonArray = JSONArray()
@@ -193,13 +243,11 @@ class SocketHandler(
             mediasoupDevice.sctpCapabilities.toJsonObject()
         } else null
 
-        if (isProduce) {
-            createSendTransport(sctpCapabilities)
-        }
 
-        if (isConsume) {
-            createRecvTransport(sctpCapabilities)
-        }
+        createSendTransport(sctpCapabilities)
+
+        createRecvTransport(sctpCapabilities)
+
     }
 
     private suspend fun createSendTransport(sctpCapabilities: JSONObject?) {
@@ -266,16 +314,19 @@ class SocketHandler(
     }
 
     private suspend fun enableMediaIfPossible() {
-        if (isProduce && mediasoupDevice.loaded) {
+        if ( mediasoupDevice.loaded) {
             val canSendMic = mediasoupDevice.canProduce("audio")
             val canSendCam = mediasoupDevice.canProduce("video")
 
-            if (canSendMic) enableMic()
-            if (canSendCam) enableCam()
+            if(canSendCam) enableCam()
+            if(canSendMic) enableMic()
         }
     }
 
     private suspend fun enableMic() {
+        micProducer?.close()
+        localAudioManager.dispose()
+        micProducer = null
         // Implementation for enabling microphone
         localAudioManager.initTrack(peerConnectionFactory, mediaConstraintsOption)
         val track = localAudioManager.track ?: run {
@@ -286,6 +337,7 @@ class SocketHandler(
         withContext(Dispatchers.Main) {
             serviceCallback.updateParticipantAudio(myPeerId, track)
         }
+        track.setEnabled(true)
         val micProducer = sendTransport?.produce(
             listener = object : Producer.Listener {
                 override fun onTransportClose(producer: Producer) {
@@ -293,7 +345,7 @@ class SocketHandler(
                     micProducer?.also {
 
                         Log.d("socket","removeProducer = ${it.id}")
-
+                        localAudioManager.dispose()
                         micProducer = null
                     }
                 }
@@ -309,6 +361,10 @@ class SocketHandler(
     }
 
     private suspend fun enableCam() {
+        camProducer?.close()
+        camProducer = null
+        localVideoManager.dispose()
+        camCapturer.stopCapture()
         // Implementation for enabling camera
         localVideoManager.initTrack(peerConnectionFactory, mediaConstraintsOption, context)
         camCapturer.startCapture(640, 480, 30)
@@ -317,16 +373,18 @@ class SocketHandler(
             Log.d("socket","video track null")
             return
         }
+        track.setEnabled(true)
         withContext(Dispatchers.Main) {
             serviceCallback.updateParticipantVideo(myPeerId, track)
         }
         val camProducer = sendTransport?.produce(
             listener = object : Producer.Listener {
                 override fun onTransportClose(producer: Producer) {
-    //
+                    //
                     Log.d("socket","onTransportClose(), camProducer")
                     camProducer?.also {
-    //                            store.removeProducer(it.id)
+                        localVideoManager.dispose()
+                        camCapturer.stopCapture()
                         camProducer = null
                     }
                 }
@@ -338,6 +396,15 @@ class SocketHandler(
         )
         this.camProducer = camProducer
         Log.d("socket","addProducer = $camProducer")
+    }
+    fun switchCamera() {
+        if (::camCapturer.isInitialized) {
+            camCapturer.switchCamera(null)
+            cameraName = if (cameraName == "front") "back" else "front"
+            Log.d("SocketHandler", "Camera switched to $cameraName")
+        } else {
+            Log.e("SocketHandler", "Camera capturer not initialized")
+        }
     }
 
     private val sendTransportListener = object : SendTransport.Listener {
@@ -376,8 +443,7 @@ class SocketHandler(
                 try {
                     val response = socket.emitAndAwait("produce", json)
                     val producerId = response.optString("id", "")
-
-
+                    if(kind=="audio") audioProducerId = producerId else videoProducerId = producerId
                     producerId
                 } catch (e: Exception) {
                     Log.e("socket", "Failed to produce", e)
@@ -420,6 +486,7 @@ class SocketHandler(
         }
     }
     suspend fun Socket.emitAndAwait(event: String, data: Any? = null): JSONObject {
+        Log.d("socket", "emitAndAwait() $event")
         return suspendCancellableCoroutine { continuation ->
             val ackCallback = object : Ack {
                 override fun call(vararg args: Any?) {
@@ -433,7 +500,9 @@ class SocketHandler(
                     } catch (e: Exception) {
                         continuation.resumeWithException(
                             Exception("Invalid response from $event event")
+
                         )
+                        Log.d("socket", "emitAndAwait() $e")
                     }
                 }
             }
@@ -451,6 +520,7 @@ class SocketHandler(
             once(event) { args ->
                 if (args.isNotEmpty() && args[0] is JSONObject) {
                     continuation.resume(args[0] as JSONObject)
+                    Log.d("socket","event:$event")
                 } else {
                     continuation.resumeWithException(
                         Exception("Invalid data for $event event")
@@ -473,19 +543,27 @@ class SocketHandler(
             Log.e("socket", "Error consuming producers", e)
         }
     }
-    private suspend fun consumeNewProducer(){
+    private  fun consumeNewProducer() {
         try {
-            val newProducer = socket.awaitEvent("new-producer")
-            coroutineScope.launch(Dispatchers.Main) {
-                serviceCallback.addParticipant(
-                    Participant(id = newProducer.getString("peerId"), name = "New Peer")
-                )
+            Log.d("socket", "newProducers ")
+            socket.on("new-producer") { args ->
+                val newProducer = args[0] as JSONObject
+                val newPeerId = newProducer.getString("peerId")
+                if(newPeerId != myPeerId + "share"){
+                    coroutineScope.launch(Dispatchers.Main) {
+                        serviceCallback.addParticipant(
+                            Participant(newPeerId, name = "New Peer")
+                        )
+                        Log.d("socket", "New producer: $newProducer")
+                        consumeMedia(newProducer.getString("producerId"))
+                    }
+                }
+
             }
-            Log.d("socket", "New producer: $newProducer")
-            consumeMedia(newProducer.getString("producerId"))
-        } catch (e: Exception) {
+        }catch (e: Exception) {
             Log.e("socket", "Error consuming new producer", e)
         }
+
     }
 
     private suspend fun consumeMedia(producerId: String) {
@@ -518,31 +596,170 @@ class SocketHandler(
                 appData = null
             ) ?: return
 
-            // Emit consumer-resume to the server
-            socket.emit("consumer-resume", JSONObject().put("consumerId", id))
 
             if ("video" == consumer.kind) {
                 val videoTrack = consumer.track as VideoTrack
                 withContext(Dispatchers.Main) {
                     videoTrack.let { serviceCallback.updateParticipantVideo(peerId, it) }
+                    serviceCallback.updateVideoConsumer(id)
                 }
             }else {
                 val audioTrack = consumer.track as AudioTrack
                 withContext(Dispatchers.Main) {
+                    audioTrack.setEnabled(isSpeakerAudio)
                     audioTrack.let { serviceCallback.updateParticipantAudio(peerId, it) }
+                    serviceCallback.updateAudioConsumer(id)
                 }
             }
         } catch (e: Exception) {
             Log.e("socket", "Error consuming media: ${e.message}")
         }
     }
+    private fun pauseVideo(){
+        val producerId = JSONObject().put("producerId", videoProducerId)
+        socket.emit("pause-producer",producerId)
+    }
+    private fun resumeVideo(){
+        val producerId = JSONObject().put("producerId", videoProducerId)
+        socket.emit("resume-producer",producerId)
+    }
+    private fun pauseAudio(){
+        val producerId = JSONObject().put("producerId", audioProducerId)
+        socket.emit("pause-producer",producerId)
+    }
+    private fun resumeAudio(){
+        val producerId = JSONObject().put("producerId", audioProducerId)
+        socket.emit("resume-producer",producerId)
+    }
+    private fun pauseProducerOfPeer(){
+        try{
+            socket.on("producer-paused") { args ->
+                val json = args[0] as JSONObject
+                val peerId = json.getString("peerId")
+                val kind = json.getString("kind")
+                coroutineScope.launch(Dispatchers.Main) {
+
+                    if(kind == "audio") {
+                        val data = JSONObject().put("consumerId",serviceCallback.getAudioConsumer(peerId))
+                        socket.emit("pause-consumer",data)
+                        Log.d("socket","Consumer paused $data")
+                        serviceCallback.toggleParticipantAudio(peerId, false)
+                    } else {
+                        val data = JSONObject().put("consumerId",serviceCallback.getVideoConsumer(peerId))
+                        socket.emit("pause-consumer",data)
+                        serviceCallback.toggleParticipantVideo(peerId,false)
+                    }
+                }
+            }
+        }catch (e: Exception) {
+            Log.e("socket", "Error pausing producer: ${e.message}")
+        }
+    }
+    private fun resumeProducerOfPeer(){
+        try{
+            socket.on("producer-resumed") { args ->
+                val json = args[0] as JSONObject
+                val peerId = json.getString("peerId")
+                val kind = json.getString("kind")
+                coroutineScope.launch(Dispatchers.Main) {
+                    if(kind == "audio") {
+                        val data = JSONObject().put("consumerId",serviceCallback.getAudioConsumer(peerId))
+                        socket.emit("resume-consumer",data)
+                        Log.d("socket","Consumer resumed $data")
+                        serviceCallback.toggleParticipantAudio(peerId, true)
+                    } else {
+                        val data = JSONObject().put("consumerId",serviceCallback.getVideoConsumer(peerId))
+                        socket.emit("resume-consumer",data)
+                        serviceCallback.toggleParticipantVideo(peerId,true)
+                    }
+                }
+            }
+        }catch (e: Exception) {
+            Log.e("socket", "Error resuming producer: ${e.message}")
+        }
+    }
+    fun sendMessage(message: String){
+        val message = JSONObject().put("text",message)
+        try{
+            socket.emit("message",message)
+            Log.d("socket", "Message: $message")
+        }catch (e: Exception) {
+            Log.e("socket", "Error sending message: ${e.message}")
+        }
+    }
+    private fun receiveMessage() {
+        try {
+            socket.on("receive-message") { args ->
+                val data = args[0] as JSONObject
+                val senderPeerId = data.getString("peerId")
+                val text = data.getString("text")
+                Log.d("socket", "Message received : $text")
+                coroutineScope.launch(Dispatchers.Main) {
+                    serviceCallback.addMessage(text, senderPeerId)
+                }
+            }
+        }catch (e: Exception) {
+                Log.e("socket", "Error receiving message: ${e.message}")
+            }
+
+    }
+    private  fun removeParticipant(){
+        try{
+            socket.on("peer-disconnected") { args ->
+                val data = args[0] as JSONObject
+                coroutineScope.launch(Dispatchers.Main) {
+                    serviceCallback.removeParticipant(data.getString("peerId"))
+                }
+            }
+        }catch (e: Exception) {
+            Log.e("socket", "Error getting disconnected peer", e)
+        }
+    }
+    private fun handlePeerRequest(){
+        Log.d("socket", "ask ")
+        socket.on("ask-to-join") { args ->
+            try {
+                Log.d("socket", "asking ")
+                if (args.isNotEmpty()) {
+                    val data = args[0] as JSONObject
+                    val requesterPeerId = data.getString("requesterPeerId")
+                    val requesterSocketId = data.getString("requesterSocketId")
+                    serviceCallback.handlePeerRequest(requesterPeerId,requesterSocketId)
+                    Log.d("socket","handlePeerRequest : $requesterPeerId")
+                }
+            } catch (e: Exception) {
+                Log.e("SocketError", "Error handling ask-to-join: ${e.localizedMessage}", e)
+            }
+        }
+    }
+    fun approvePeer(approved: Boolean,requesterSocketId:String){
+        val response = JSONObject().apply {
+            put("approved", approved)
+            put("to", requesterSocketId)
+        }
+        Log.d("socket","hRequest : $approved")
+        socket.emit("ask-to-join-response", response)
+    }
+
+
 
 
     fun closeConnection() {
-        sendTransport?.close()
-        recvTransport?.close()
-        socket.disconnect()
-        Log.d("socket", "Connection closed")
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                sendTransport?.close()
+                recvTransport?.close()
+                socket.disconnect()
+            } catch (e: Exception) {
+                Log.e("socket", "Error during endCall: ${e.message}")
+            } finally {
+                sendTransport = null
+                recvTransport = null
+                socket.close()
+                Log.d("socket", "Connection fully closed")
+            }
+        }
     }
+
 }
 

@@ -54,6 +54,8 @@ dependencies {
     implementation(libs.androidx.credentials)
     implementation(libs.androidx.credentials.play.services.auth)
     implementation(libs.googleid)
+    implementation(libs.firebase.firestore)
+    implementation(libs.firebase.storage)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
@@ -70,12 +72,21 @@ dependencies {
     // Socket.IO client for Android
     implementation (libs.socket.io.client)
 
-
+    // CameraX dependencies
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
 
     // Kotlin coroutines for asynchronous operations
     implementation (libs.kotlinx.coroutines.android)
 //    implementation(libs.msal)
     implementation(libs.libmediasoup.android)
     implementation(libs.libwebrtc.ktx)
+
+    implementation(libs.androidx.datastore.preferences)
+
+    implementation(libs.guava)
+
+
 
 }

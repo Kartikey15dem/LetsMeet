@@ -1,4 +1,4 @@
-package com.myworldtech.meet.presentation.componenets
+package com.myworldtech.meet.presentation.componenets.auth
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
