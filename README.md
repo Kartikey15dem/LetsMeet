@@ -13,7 +13,7 @@ Watch a demo of the app in action:
 
 ## 🛠️ Backend Repository
 
-The server-side implementation is built with **Node.js** and **Mediasoup**.  
+The server-side implementation is built with **Node.js** and **Mediasoup**(not written by me).  
 Check it out here:  
 🔗 [video-call-server-mediasoup – GitHub](https://github.com/Kartikey15dem/video-call-server-mediasoup)
 
