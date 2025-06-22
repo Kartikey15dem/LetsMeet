@@ -30,7 +30,7 @@ class ShareScreenSocketHandler(
     private val coroutineScope: CoroutineScope,
     private val mediaProjectionData: Intent, // Pass this from your service/activity
 ) {
-    private lateinit var socket: Socket
+    private var socket: Socket? = null
     private lateinit var mediasoupDevice: Device
     private var sendTransport: SendTransport? = null
     private val rtcConfig = PeerConnection.RTCConfiguration(emptyList())
@@ -53,7 +53,7 @@ class ShareScreenSocketHandler(
         myPeerId = peerId + "share"
         try {
             initializeSocket()
-            val roomData = joinRoom(roomId)
+            val roomData = joinRoom("023")
             initializeMediaComponents()
             setupMediaSoupDevice(roomData)
             createTransports()
@@ -65,12 +65,13 @@ class ShareScreenSocketHandler(
 
     private suspend fun initializeSocket() {
         socket = IO.socket("http://192.168.29.235:3000")
-        socket.connect()
-        Log.d("socket", "Socket connected: ${socket.connected()}")
-        socket.on(Socket.EVENT_CONNECT_ERROR) { args ->
+
+        socket?.connect()
+        Log.d("socket", "Socket connected: ${socket?.connected()}")
+        socket?.on(Socket.EVENT_CONNECT_ERROR) { args ->
             Log.e("socket", "Connection error: ${args[0]}")
         }
-        socket.on(Socket.EVENT_DISCONNECT) {
+        socket?.on(Socket.EVENT_DISCONNECT) {
             Log.d("socket", "Socket disconnected")
         }
     }
@@ -78,9 +79,9 @@ class ShareScreenSocketHandler(
     private suspend fun joinRoom(roomId: String): JSONObject {
         val roomRequest = JSONObject().put("roomId", roomId)
             .put("peerId", myPeerId)
-        socket.emit("join-room", roomRequest)
+        socket?.emit("join-room", roomRequest)
         Log.d("socket", "Socket join-room: $roomRequest")
-        return socket.awaitEvent("room-joined")
+        return socket?.awaitEvent("room-joined") ?: JSONObject()
     }
 
     private fun initializeMediaComponents() {
@@ -111,7 +112,7 @@ class ShareScreenSocketHandler(
     }
 
     private suspend fun createSendTransport(sctpCapabilities: JSONObject?) {
-        val transportInfo = socket.emitAndAwait("create-send-transport")
+        val transportInfo = socket?.emitAndAwait("create-send-transport") ?: return
         JsonUtils.jsonPut(transportInfo, "sctpCapabilities", sctpCapabilities)
         val id = transportInfo.getString("id")
         val iceParameters = transportInfo.getJSONObject("iceParameters").toString()
@@ -205,7 +206,7 @@ class ShareScreenSocketHandler(
             val payload = JSONObject().put("dtlsParameters", jsonParameters)
             coroutineScope.launch {
                 try {
-                    socket.emitAndAwait("connect-send-transport", payload)
+                    socket?.emitAndAwait("connect-send-transport", payload)
                     Log.d("socket", "Send transport connected")
                 } catch (e: Exception) {
                     Log.e("socket", "Failed to connect send transport", e)
@@ -223,8 +224,8 @@ class ShareScreenSocketHandler(
             }
             return kotlinx.coroutines.runBlocking {
                 try {
-                    val response = socket.emitAndAwait("produce", json)
-                    response.optString("id", "")
+                    val response = socket?.emitAndAwait("produce", json)
+                    response?.optString("id", "") ?: ""
                 } catch (e: Exception) {
                     Log.e("socket", "Failed to produce", e)
                     ""
@@ -281,14 +282,15 @@ class ShareScreenSocketHandler(
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 sendTransport?.close()
-                socket.disconnect()
+                socket?.disconnect()
             } catch (e: Exception) {
                 Log.e("socket", "Error during endCall: ${e.message}")
             } finally {
                 sendTransport = null
-                socket.close()
+                socket?.close()
                 Log.d("socket", "Connection fully closed")
             }
         }
     }
 }
+

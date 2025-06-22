@@ -20,9 +20,5 @@ data class Message(
     val text: String,
     val isMe: Boolean
 )
-data class JoinRequest(
-    val peerId: String,
-    val socketId: String,
-    val result: CompletableDeferred<Boolean>
-)
+
 

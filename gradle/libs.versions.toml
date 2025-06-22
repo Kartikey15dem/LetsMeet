@@ -23,12 +23,18 @@ credentials = "1.5.0"
 credentialsPlayServicesAuth = "1.5.0"
 googleid = "1.1.1"
 
+mediasoupClient = "3.0.0"
+mediasoupClientVersion = "3.6.31"
+mediasoupMediasoupClient = "3.7.4"
 msal = "4.5.0"
 navigationCompose = "2.8.9"
+netty = "1.0.2"
 playServicesAuth = "21.3.0"
 socketIoClient = "2.1.1"
 firebaseFirestore = "25.1.4"
 firebaseStorage = "21.0.1"
+appcompat = "1.7.0"
+material = "1.12.0"
 
 
 [libraries]
@@ -44,6 +50,7 @@ androidx-navigation-compose = { module = "androidx.navigation:navigation-compose
 coil-compose = { module = "io.coil-kt:coil-compose", version.ref = "coilCompose" }
 coil-compose-v250 = { module = "io.coil-kt:coil-compose", version.ref = "coilComposeVersion" }
 coil-svg = { module = "io.coil-kt:coil-svg", version.ref = "coilCompose" }
+droid-mediasoup-client = { module = "org.mediasoup.droid:mediasoup-client", version.ref = "mediasoupClientVersion" }
 google-webrtc = { module = "org.webrtc:google-webrtc", version.ref = "googleWebrtc" }
 guava = { module = "com.google.guava:guava", version.ref = "guava" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
@@ -67,14 +74,20 @@ androidx-credentials-play-services-auth = { group = "androidx.credentials", name
 googleid = { group = "com.google.android.libraries.identity.googleid", name = "googleid", version.ref = "googleid" }
 libmediasoup-android = "io.github.crow-misia.libmediasoup-android:libmediasoup-android:0.16.0"
 libwebrtc-ktx = "io.github.crow-misia.libwebrtc:libwebrtc-ktx:1.9.3"
+mediasoup-client = { module = "io.github.crow-misia:mediasoup-client", version.ref = "mediasoupClient" }
+mediasoup-mediasoup-client = { module = "org.mediasoup:mediasoup-client", version.ref = "mediasoupMediasoupClient" }
 msal = { module = "com.microsoft.identity.client:msal", version.ref = "msal" }
+netty = { module = "com.github.Gauthamas:netty", version.ref = "netty" }
 play-services-auth = { module = "com.google.android.gms:play-services-auth", version.ref = "playServicesAuth" }
 socket-io-client = { module = "io.socket:socket.io-client", version.ref = "socketIoClient" }
 firebase-firestore = { group = "com.google.firebase", name = "firebase-firestore", version.ref = "firebaseFirestore" }
 firebase-storage = { group = "com.google.firebase", name = "firebase-storage", version.ref = "firebaseStorage" }
+androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
+material = { group = "com.google.android.material", name = "material", version.ref = "material" }
 
 
 [plugins]
+android-library = { id = "com.android.library", version.ref = "agp" }
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

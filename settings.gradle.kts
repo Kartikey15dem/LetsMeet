@@ -22,4 +22,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "Meet"
 include(":app")
- 
+include(":network-monitor")

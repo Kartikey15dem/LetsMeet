@@ -54,11 +54,11 @@ fun LoginScreen(
             authService.handleGoogleSignInResult(
                 account = account,
                 onSuccess = {
-                    Toast.makeText(
-                        context,
-                        "Google Sign-In Successful",
-                        Toast.LENGTH_SHORT
-                    ).show()
+//                    Toast.makeText(
+//                        context,
+//                        "Google Sign-In Successful",
+//                        Toast.LENGTH_SHORT
+//                    ).show()
                     onLoginSuccess.invoke()
                 },
                 onFailure = { error ->
@@ -171,7 +171,7 @@ fun SignInButton(
             Text(
                 text = text,
                 fontSize = 16.sp,
-                color = if (isSystemInDarkTheme()) Color.White else Color.Black,
+                color = Color.Black,
             )
         }
     }

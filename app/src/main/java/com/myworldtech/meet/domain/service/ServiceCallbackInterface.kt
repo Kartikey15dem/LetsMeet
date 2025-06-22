@@ -8,6 +8,7 @@ interface ServiceCallbackInterface {
    suspend fun addParticipant(participant: Participant)
     fun addMyParticipant(participant: Participant)
     fun removeParticipant(participantId:String)
+    fun updateParticipant(participant: Participant)
     fun updateParticipantVideo(id: String, videoTrack: VideoTrack?)
     fun updateParticipantAudio(id: String, audioTrack: AudioTrack?)
     fun toggleParticipantVideo(id: String,enabled: Boolean)

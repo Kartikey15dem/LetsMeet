@@ -4,6 +4,7 @@ import android.os.Build
 import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -29,7 +30,8 @@ fun AppNavigation(
     startService:suspend (String,String,Boolean) -> Boolean,
     onCallEnd: () -> Unit,
     startVScreenSharing: () -> Unit,
-    stopScreenSharing: () -> Unit
+    stopScreenSharing: () -> Unit,
+    modifier: Modifier
 ) {
     val navController = rememberNavController()
 
@@ -40,8 +42,18 @@ fun AppNavigation(
         // Login Screen
         composable("login") {
             LoginScreen(
-                onLoginSuccess = { navController.navigate("home") },
-                onCreateAccount = { navController.navigate("createAccount") },
+                onLoginSuccess = {
+                    navController.navigate("home") {
+                        popUpTo(0) { inclusive = true }
+                        launchSingleTop = true
+                    }
+                },
+                onCreateAccount = {
+                    navController.navigate("createAccount") {
+                        popUpTo(0) { inclusive = true }
+                        launchSingleTop = true
+                    }
+                },
                 authService = authService
             ) { navController.navigate("emailLogin") }
         }
@@ -52,7 +64,7 @@ fun AppNavigation(
                 viewModel = authViewModel,
                 authService = authService,
                 onAccountCreated = { navController.navigate("home")
-                    navController.popBackStack()}
+                    }
             )
         }
         composable ("emailLogin"){
@@ -65,6 +77,7 @@ fun AppNavigation(
         }
         // Home Screen
         composable("home") {
+
             HomeScreen(
                 navController = navController
             )

@@ -1,9 +1,12 @@
 package com.myworldtech.meet
 
+import android.Manifest
 import android.app.PictureInPictureParams
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.media.AudioManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
@@ -21,7 +24,11 @@ import com.myworldtech.meet.presentation.viewmodels.AuthViewModel
 import com.myworldtech.meet.ui.theme.MeetTheme
 import androidx.activity.viewModels
 import androidx.annotation.RequiresApi
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.mutableStateOf
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.emptyPreferences
@@ -39,6 +46,9 @@ import java.io.IOException
 import androidx.datastore.preferences.preferencesDataStore
 import com.myworldtech.meet.data.preferences.getPeerId
 import com.myworldtech.meet.data.preferences.isUserLoggedIn
+import `in`.gauthama.network_monitor.NetworkStateMonitorFactory
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 
 class MainActivity : ComponentActivity() {
@@ -49,6 +59,29 @@ class MainActivity : ComponentActivity() {
     private val REQUEST_CODE_SCREEN_CAPTURE = 1001
     @RequiresApi(Build.VERSION_CODES.Q)
     override fun onCreate(savedInstanceState: Bundle?) {
+        val networkStateMonitor = NetworkStateMonitorFactory.create(this)
+        CoroutineScope(Dispatchers.IO).launch {
+            if (ActivityCompat.checkSelfPermission(
+                    this@MainActivity,
+                    Manifest.permission.READ_PHONE_STATE
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                // TODO: Consider calling
+                //    ActivityCompat#requestPermissions
+                // here to request the missing permissions, and then overriding
+                //   public void onRequestPermissionsResult(int requestCode, String[] permissions,
+                //                                          int[] grantResults)
+                // to handle the case where the user grants the permission. See the documentation
+                // for ActivityCompat#requestPermissions for more details.
+                return@launch
+            }
+            networkStateMonitor.observeNetworkChanges().collect { networkState ->
+                val nw = networkState.downloadBandwidthKbps
+                Log.d("network", "Network: $nw")
+
+            }
+
+        }
 
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -68,23 +101,29 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MeetTheme {
-                AppNavigation(
-                    isLoggedIn = isLoggedIn,
-                    peerId = peerId.toString(),
-                    videoCallViewModel = viewModel,
-                    authViewModel = authViewModel,
-                    authService = authService,
-                    startService = { roomId, peerId, isHost ->
-                        initialize()
-                        return@AppNavigation startVideoCallService(roomId, peerId, isHost)
-                    },
-                    onCallEnd = { viewModel.endCall(this) },
-                    startVScreenSharing = { startVScreenSharing() },
-                    stopScreenSharing = { stopScreenSharing() },
-                )
-
+                Scaffold(
+                    modifier = Modifier.navigationBarsPadding()
+                ) { innerPadding ->
+                    AppNavigation(
+                        isLoggedIn = isLoggedIn,
+                        peerId = peerId.toString(),
+                        videoCallViewModel = viewModel,
+                        authViewModel = authViewModel,
+                        authService = authService,
+                        startService = { roomId, peerId, isHost ->
+                            initialize()
+                            return@AppNavigation startVideoCallService(roomId, peerId, isHost)
+                        },
+                        onCallEnd = { viewModel.endCall(this) },
+                        startVScreenSharing = { startVScreenSharing() },
+                        stopScreenSharing = { stopScreenSharing() },
+                        // 👇 You need to update AppNavigation to accept a `modifier`
+                        modifier = Modifier.padding(innerPadding)
+                    )
+                }
             }
         }
+
     }
 
     private suspend fun startVideoCallService(roomId:String,peerId:String,isHost: Boolean) : Boolean{
@@ -92,6 +131,7 @@ class MainActivity : ComponentActivity() {
         ContextCompat.startForegroundService(this, serviceIntent)
         viewModel.bindToService(this)
         viewModel.setServiceStartedValue(true)
+        setAudioToSpeaker(this)
         return viewModel.initializeSocket(roomId,peerId,isHost)
     }
 
@@ -157,13 +197,19 @@ class MainActivity : ComponentActivity() {
 //            }
 //        )
 //    }
-override fun onUserLeaveHint() {
-    if (viewModel.isServiceStarted) {
-        super.onUserLeaveHint()
-        enterPipManually()
+    override fun onUserLeaveHint() {
+        if (viewModel.isServiceStarted) {
+            super.onUserLeaveHint()
+            enterPipManually()
+        }
     }
+
+
+
 }
-
-
+fun setAudioToSpeaker(context: Context) {
+    val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+    audioManager.isSpeakerphoneOn = true
 }
 

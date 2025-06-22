@@ -129,6 +129,12 @@ class VideoCallService : Service() {
                 current - participantId
             }
         }
+        override fun updateParticipant(participant: Participant) {
+            _participants.update { current ->
+                current - participant.id
+                current + (participant.id to participant)
+            }
+        }
 
         override fun updateParticipantVideo(id: String, videoTrack: VideoTrack?) {
             _participants.update { current ->

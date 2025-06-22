@@ -1,11 +1,21 @@
 package com.myworldtech.meet.data.socket
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.media.AudioManager
 import android.media.MediaRecorder.AudioSource
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkRequest
+import android.os.Handler
+import android.os.Looper
 import android.preference.PreferenceManager
 import android.text.TextUtils
 import android.util.Log
+import androidx.compose.runtime.mutableStateOf
+import androidx.core.app.ActivityCompat
+import androidx.core.os.postDelayed
 import com.myworldtech.meet.data.preferences.getUserInfo
 import com.myworldtech.meet.presentation.viewmodels.VideoCallViewModel
 import io.github.crow_misia.webrtc.option.MediaConstraintsOption
@@ -23,6 +33,7 @@ import com.myworldtech.meet.data.util.PeerConnectionUtils
 import com.myworldtech.meet.data.util.toJsonObject
 import com.myworldtech.meet.domain.service.ServiceCallbackInterface
 import com.myworldtech.meet.presentation.model.Participant
+import `in`.gauthama.network_monitor.NetworkStateMonitorFactory
 import io.github.crow_misia.mediasoup.Device
 import io.github.crow_misia.mediasoup.Producer
 import io.github.crow_misia.mediasoup.Consumer
@@ -36,27 +47,37 @@ import io.github.crow_misia.webrtc.RTCLocalVideoManager
 import io.socket.client.Ack
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.webrtc.CameraVideoCapturer
+import org.webrtc.DataChannel
+import org.webrtc.IceCandidate
+import org.webrtc.MediaStream
 import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
+import org.webrtc.RtpParameters
+import org.webrtc.RtpReceiver
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.ranges.until
 import kotlin.text.ifEmpty
+import kotlin.math.pow
+
 
 class SocketHandler(
     private val serviceCallback: ServiceCallbackInterface,
     private val context: Context,
     private val coroutineScope: CoroutineScope
 ) {
-    private lateinit var socket: Socket
+    private var socket: Socket? = null
     private lateinit var mediasoupDevice: Device
     private var sendTransport: SendTransport? = null
     private var recvTransport: RecvTransport? = null
@@ -74,10 +95,31 @@ class SocketHandler(
     private lateinit var camCapturer: CameraVideoCapturer
     private lateinit var  peerConnectionFactory: PeerConnectionFactory
     private lateinit var mediaConstraintsOption: MediaConstraintsOption
+    private lateinit var peerConnection: PeerConnection
+
     private lateinit var nProducers : String
     private lateinit var videoProducerId : String
     private lateinit var audioProducerId: String
     private var isSpeakerAudio = false
+    private var callEnded = false
+    private var isHost = false
+    private lateinit var roomId: String
+
+    var networkQuality = NetworkQuality.HIGH
+
+    private val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    val networkStateMonitor = NetworkStateMonitorFactory.create(context)
+
+
+
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            if (socket?.connected() == false) {
+                socket?.connect()
+            }
+        }
+
+    }
 
     fun toggleSpeakerAudio(isEnabled: Boolean){
         isSpeakerAudio = isEnabled
@@ -108,11 +150,20 @@ class SocketHandler(
     }
 
     suspend fun setupSocketConnection(roomId: String,peerId: String,isHost: Boolean): Boolean {
-
+        initializeSocket()
+        myPeerId = peerId
+        this.roomId = roomId
+        this.isHost = isHost
+        return setupConnection(roomId,peerId,isHost)
+    }
+    suspend fun setupConnection(roomId: String,peerId: String,isHost: Boolean): Boolean {
             try {
-                myPeerId = peerId
+
+
                 initializeSocket()
-                val roomData = joinRoom(roomId,isHost)
+                val request = NetworkRequest.Builder().build()
+                connectivityManager.registerNetworkCallback(request, networkCallback)
+                val roomData = joinRoom("023",isHost)
                 if(roomData.has("approved")) return false
                 initializeMediaComponents()
                 setupMediaSoupDevice(roomData)
@@ -126,6 +177,8 @@ class SocketHandler(
                 receiveMessage()
                 if (isHost) handlePeerRequest()
 
+
+
             } catch (e: Exception) {
                 Log.e("socket", "Setup failed", e)
                 return false
@@ -133,22 +186,64 @@ class SocketHandler(
         return true
     }
 
-    private suspend fun initializeSocket() {
+    private fun initializeSocket() {
         try {
 
-            socket = IO.socket("http://192.168.29.235:3000")
-            socket.connect()
-            Log.d("socket", "Socket connected: ${socket.connected()}")
-
-            // Add error handling
-            socket.on(Socket.EVENT_CONNECT_ERROR) { args ->
-                Log.e("socket", "Connection error: ${args[0]}")
+            val opts = IO.Options().apply {
+                reconnection = true
+                reconnectionAttempts = Int.MAX_VALUE
+                reconnectionDelay = 2000
+                reconnectionDelayMax = 10000
+                timeout = 5000
             }
-            socket.on(Socket.EVENT_DISCONNECT) {
-                Log.d("socket", "Socket disconnected")
+
+//
+            socket = IO.socket("http://192.168.29.235:3000",opts)
+            socket?.connect()
+            Log.d("socket", "Socket connected: ${socket?.connected()}")
+            socket?.on(Socket.EVENT_CONNECT) {
+                Log.d("socket", "Socket connected")
+            }
+            // Add error handling
+            socket?.on(Socket.EVENT_CONNECT_ERROR) { args ->
+                Log.e("socket", "Connection error: ${args[0]}")
+                Handler(Looper.getMainLooper()).postDelayed({
+                    if (socket?.connected() == false) {
+                        socket?.connect()
+                    }
+                }, 5000)
+
+            }
+            socket?.on(Socket.EVENT_DISCONNECT) {
+                sendTransport?.close()
+                recvTransport?.close()
+
+                sendTransport = null
+                recvTransport = null
+               if(!callEnded) tryConnectWithTimeout()
             }
         } catch (e: URISyntaxException) {
             Log.e("socket", "Invalid server URL", e)
+        }
+    }
+    var reconnectTimeoutJob: Job? = null
+
+    fun tryConnectWithTimeout() {
+        socket?.connect()
+
+        Log.d("socket","trying to reconnect")
+        reconnectTimeoutJob?.cancel() // cancel if already running
+        reconnectTimeoutJob = coroutineScope.launch {
+            setupConnection(roomId,myPeerId,isHost)
+            delay(30_000) // wait 30 seconds
+
+            socket?.connected()?.let {
+                if (!it) {
+                    // Still not connected after 30 seconds
+                    socket?.disconnect()
+                    closeConnection()
+                }
+            }
         }
     }
 
@@ -156,11 +251,11 @@ class SocketHandler(
         val roomRequest = JSONObject().put("roomId", roomId)
             .put("peerId", myPeerId)
             .put("isHost", isHost)
-        socket.emit("join-room", roomRequest)
+        socket?.emit("join-room", roomRequest)
         Log.d("socket", "Socket join-room: $roomRequest")
-        val approved = socket.awaitEvent("join-approved")
+        val approved = socket?.awaitEvent("join-approved") ?: return JSONObject()
         Log.d("socket","approved : ${approved.getBoolean("approved")}")
-        return if(approved.getBoolean("approved")) socket.awaitEvent("room-joined") else approved
+        return if(approved.getBoolean("approved")) socket?.awaitEvent("room-joined") ?: JSONObject() else approved
 
     }
 
@@ -195,6 +290,22 @@ class SocketHandler(
 
         componentFactory = RTCComponentFactory(mediaConstraintsOption)
         peerConnectionFactory = componentFactory.createPeerConnectionFactory(context) { _, _ -> }
+        peerConnection = peerConnectionFactory.createPeerConnection(
+            rtcConfig,
+            object : PeerConnection.Observer {
+                override fun onSignalingChange(p0: PeerConnection.SignalingState?) {}
+                override fun onIceConnectionChange(p0: PeerConnection.IceConnectionState?) {}
+                override fun onIceConnectionReceivingChange(p0: Boolean) {}
+                override fun onIceGatheringChange(p0: PeerConnection.IceGatheringState?) {}
+                override fun onIceCandidate(p0: IceCandidate?) {}
+                override fun onIceCandidatesRemoved(p0: Array<out IceCandidate>?) {}
+                override fun onAddStream(p0: MediaStream?) {}
+                override fun onRemoveStream(p0: MediaStream?) {}
+                override fun onDataChannel(p0: DataChannel?) {}
+                override fun onRenegotiationNeeded() {}
+                override fun onAddTrack(p0: RtpReceiver?, p1: Array<out MediaStream>?) {}
+            }
+        )!!
         localAudioManager = componentFactory.createAudioManager()!!
         localVideoManager = componentFactory.createVideoManager()!!
         mediasoupDevice = peerConnectionFactory.createDevice()
@@ -245,15 +356,15 @@ class SocketHandler(
 
 
         createSendTransport(sctpCapabilities)
-
+        Log.d("socket", "Send transport created")
         createRecvTransport(sctpCapabilities)
-
+        Log.d("socket", "Receive transport created")
     }
 
     private suspend fun createSendTransport(sctpCapabilities: JSONObject?) {
         try {
             // Request transport info from server
-            val transportInfo = socket.emitAndAwait("create-send-transport")
+            val transportInfo = socket?.emitAndAwait("create-send-transport") ?: return
             JsonUtils.jsonPut(transportInfo, "sctpCapabilities", sctpCapabilities)
 
             // Extract parameters
@@ -262,6 +373,10 @@ class SocketHandler(
             val iceCandidates = transportInfo.getJSONArray("iceCandidates").toString()
             val dtlsParameters = transportInfo.getJSONObject("dtlsParameters")
             val sctpParameters = transportInfo.optString("sctpParameters").ifEmpty { null }
+
+
+
+            Log.d("socket", "ica Candidates : $iceCandidates")
 
             // Create transport
             sendTransport = mediasoupDevice.createSendTransport(
@@ -275,7 +390,7 @@ class SocketHandler(
                 rtcConfig = rtcConfig
             )
 
-            Log.d("socket", "Send transport created: ${sendTransport?.id}")
+
         } catch (e: Exception) {
             Log.e("socket", "Error creating send transport", e)
             throw e
@@ -284,7 +399,7 @@ class SocketHandler(
 
     private suspend fun createRecvTransport(sctpCapabilities: JSONObject?) {
         try {
-            val transportInfo = socket.emitAndAwait("create-recv-transport")
+            val transportInfo = socket?.emitAndAwait("create-recv-transport") ?: return
             JsonUtils.jsonPut(transportInfo, "sctpCapabilities", sctpCapabilities)
 
             // Extract parameters (similar to createSendTransport)
@@ -306,7 +421,7 @@ class SocketHandler(
                 rtcConfig = rtcConfig
             )
 
-            Log.d("socket", "Receive transport created: ${recvTransport?.id}")
+
         } catch (e: Exception) {
             Log.e("socket", "Error creating receive transport", e)
             throw e
@@ -337,6 +452,7 @@ class SocketHandler(
         withContext(Dispatchers.Main) {
             serviceCallback.updateParticipantAudio(myPeerId, track)
         }
+
         track.setEnabled(true)
         val micProducer = sendTransport?.produce(
             listener = object : Producer.Listener {
@@ -376,7 +492,14 @@ class SocketHandler(
         track.setEnabled(true)
         withContext(Dispatchers.Main) {
             serviceCallback.updateParticipantVideo(myPeerId, track)
+            Log.d("socket","cam enabled")
         }
+        val encodingLow = RtpParameters.Encoding("r0", true, 4.0)
+        val encodingMid = RtpParameters.Encoding("r1", true, 2.0)
+        val encodingHigh = RtpParameters.Encoding("r2", true, 1.0)
+
+        val encodings = listOf(encodingLow, encodingMid, encodingHigh)
+
         val camProducer = sendTransport?.produce(
             listener = object : Producer.Listener {
                 override fun onTransportClose(producer: Producer) {
@@ -390,7 +513,7 @@ class SocketHandler(
                 }
             },
             track = track,
-            encodings = emptyList(),
+            encodings = encodings,
             codecOptions = null,
             appData = null,
         )
@@ -415,7 +538,7 @@ class SocketHandler(
 
             coroutineScope.launch {
                 try {
-                    socket.emitAndAwait("connect-send-transport", payload)
+                    socket?.emitAndAwait("connect-send-transport", payload)
                     Log.d("socket", "Send transport connected")
                 } catch (e: Exception) {
                     Log.e("socket", "Failed to connect send transport", e)
@@ -441,7 +564,7 @@ class SocketHandler(
             // We need to use runBlocking here because this interface function must return synchronously
             return runBlocking {
                 try {
-                    val response = socket.emitAndAwait("produce", json)
+                    val response = socket?.emitAndAwait("produce", json) ?: JSONObject()
                     val producerId = response.optString("id", "")
                     if(kind=="audio") audioProducerId = producerId else videoProducerId = producerId
                     producerId
@@ -473,7 +596,7 @@ class SocketHandler(
 
             coroutineScope.launch {
                 try {
-                    socket.emitAndAwait("connect-recv-transport", payload)
+                    socket?.emitAndAwait("connect-recv-transport", payload)
                     Log.d("socket", "Receive transport connected")
                 } catch (e: Exception) {
                     Log.e("socket", "Failed to connect receive transport", e)
@@ -485,6 +608,7 @@ class SocketHandler(
             Log.d("socket", "Receive transport connection state: $newState")
         }
     }
+
     suspend fun Socket.emitAndAwait(event: String, data: Any? = null): JSONObject {
         Log.d("socket", "emitAndAwait() $event")
         return suspendCancellableCoroutine { continuation ->
@@ -515,6 +639,7 @@ class SocketHandler(
             }
         }
     }
+
     suspend fun Socket.awaitEvent(event: String): JSONObject {
         return suspendCancellableCoroutine { continuation ->
             once(event) { args ->
@@ -529,24 +654,26 @@ class SocketHandler(
             }
         }
     }
-    private suspend fun consumeRemoteProducers() {
-        try {
-            Log.d("socket", "nProducers: $nProducers")
-            val producerJsonArray = JSONArray(nProducers)
+    private  fun consumeRemoteProducers() {
+        coroutineScope.launch {
+            try {
+                Log.d("socket", "nProducers: $nProducers")
+                val producerJsonArray = JSONArray(nProducers)
 
-            for (i in 0 until producerJsonArray.length()) {
-                val producerJson = producerJsonArray.getJSONObject(i)
-                val producerId = producerJson.getString("producerId")
-                consumeMedia(producerId)
+                for (i in 0 until producerJsonArray.length()) {
+                    val producerJson = producerJsonArray.getJSONObject(i)
+                    val producerId = producerJson.getString("producerId")
+                    consumeMedia(producerId)
+                }
+            } catch (e: Exception) {
+                Log.e("socket", "Error consuming producers", e)
             }
-        } catch (e: Exception) {
-            Log.e("socket", "Error consuming producers", e)
         }
     }
     private  fun consumeNewProducer() {
         try {
             Log.d("socket", "newProducers ")
-            socket.on("new-producer") { args ->
+            socket?.on("new-producer") { args ->
                 val newProducer = args[0] as JSONObject
                 val newPeerId = newProducer.getString("peerId")
                 if(newPeerId != myPeerId + "share"){
@@ -576,7 +703,7 @@ class SocketHandler(
         Log.d("socket", "Consume request: $requestData")
 
         try {
-            val responseData = socket.emitAndAwait("consume", requestData)
+            val responseData = socket?.emitAndAwait("consume", requestData) ?: return
 
             val peerId = responseData.optString("peerId")
             val id = responseData.optString("id")?:""
@@ -602,6 +729,7 @@ class SocketHandler(
                 withContext(Dispatchers.Main) {
                     videoTrack.let { serviceCallback.updateParticipantVideo(peerId, it) }
                     serviceCallback.updateVideoConsumer(id)
+                    monitorNetwork(id, peerConnection)
                 }
             }else {
                 val audioTrack = consumer.track as AudioTrack
@@ -610,30 +738,113 @@ class SocketHandler(
                     audioTrack.let { serviceCallback.updateParticipantAudio(peerId, it) }
                     serviceCallback.updateAudioConsumer(id)
                 }
+
             }
         } catch (e: Exception) {
             Log.e("socket", "Error consuming media: ${e.message}")
         }
     }
+    fun monitorNetwork(consumerId: String, peerConnection: PeerConnection) {
+
+        CoroutineScope(Dispatchers.IO).launch {
+            networkStateMonitor.observeNetworkChanges().collect { networkState ->
+                val downloadBandwidthKbps = networkState.downloadBandwidthKbps
+                if (downloadBandwidthKbps != null) {
+                    networkQuality = when {
+                        downloadBandwidthKbps < 500 -> NetworkQuality.LOW       // e.g., audio-only or 144p
+                        downloadBandwidthKbps < 2500 -> NetworkQuality.MEDIUM   // e.g., 360p – 480p
+                        else -> NetworkQuality.HIGH                             // e.g., 720p – 1080p+
+                    }
+
+                    val spatialLayer = when (networkQuality) {
+                        NetworkQuality.LOW -> 0
+                        NetworkQuality.MEDIUM -> 1
+                        NetworkQuality.HIGH -> 2
+                    }
+                    Log.d("socket","Network quality changed to : $networkQuality")
+                    // Dynamically switch layers
+                    changeConsumerVideoQuality(consumerId, spatialLayer, 0)
+                }
+
+            }
+//            while (true) {
+//                delay(3000)
+//
+//                peerConnection.getStats { report ->
+//                    for (stat in report.statsMap.values) {
+//                        if (stat.type == "inbound-rtp" && stat.id.contains("RTCInboundRTPVideoStream")) {
+//                            val bitrate = stat.members["bytesReceived"]?.toString()?.toLongOrNull()
+//                            val packetsLost = stat.members["packetsLost"]?.toString()?.toIntOrNull()
+//                            val rtt = stat.members["roundTripTime"]?.toString()?.toDoubleOrNull()
+//
+//                            Log.d("network", "Bitrate: $bitrate, Packet loss: $packetsLost, RTT: $rtt")
+//
+//                            networkQuality.value = when {
+//                                rtt != null && rtt > 300 -> NetworkQuality.LOW
+//                                bitrate != null && bitrate < 300_000 -> NetworkQuality.LOW
+//                                bitrate != null && bitrate < 800_000 -> NetworkQuality.MEDIUM
+//                                else -> NetworkQuality.HIGH
+//                            }
+//
+//                        }
+//                    }
+//                }
+//                networkQuality.collectLatest {quality->
+//                    val spatialLayer = when (quality) {
+//                        NetworkQuality.LOW -> 0
+//                        NetworkQuality.MEDIUM -> 1
+//                        NetworkQuality.HIGH -> 2
+//                    }
+//                    // Dynamically switch layers
+//                    changeConsumerVideoQuality(consumerId, spatialLayer, 0)
+//                }
+
+        }
+    }
+    fun changeConsumerVideoQuality(
+        consumerId: String,
+        spatialLayer: Int,
+        temporalLayer: Int
+    ) {
+        val data = JSONObject().apply {
+            put("consumerId", consumerId)
+            put("spatialLayer", spatialLayer)
+            put("temporalLayer", temporalLayer)
+        }
+
+        socket?.emit("set-consumer-quality", data)
+
+        socket?.once("quality-change-success") { args ->
+            val response = args.firstOrNull() as? JSONObject
+            Log.d("socket", "Quality change success: $response")
+        }
+
+        socket?.once("quality-change-error") { args ->
+            val error = args.firstOrNull() as? JSONObject
+            Log.e("socket", "Quality change failed: ${error?.optString("error")}")
+        }
+    }
+
+
     private fun pauseVideo(){
         val producerId = JSONObject().put("producerId", videoProducerId)
-        socket.emit("pause-producer",producerId)
+        socket?.emit("pause-producer",producerId)
     }
     private fun resumeVideo(){
         val producerId = JSONObject().put("producerId", videoProducerId)
-        socket.emit("resume-producer",producerId)
+        socket?.emit("resume-producer",producerId)
     }
     private fun pauseAudio(){
         val producerId = JSONObject().put("producerId", audioProducerId)
-        socket.emit("pause-producer",producerId)
+        socket?.emit("pause-producer",producerId)
     }
     private fun resumeAudio(){
         val producerId = JSONObject().put("producerId", audioProducerId)
-        socket.emit("resume-producer",producerId)
+        socket?.emit("resume-producer",producerId)
     }
     private fun pauseProducerOfPeer(){
         try{
-            socket.on("producer-paused") { args ->
+            socket?.on("producer-paused") { args ->
                 val json = args[0] as JSONObject
                 val peerId = json.getString("peerId")
                 val kind = json.getString("kind")
@@ -641,12 +852,12 @@ class SocketHandler(
 
                     if(kind == "audio") {
                         val data = JSONObject().put("consumerId",serviceCallback.getAudioConsumer(peerId))
-                        socket.emit("pause-consumer",data)
+                        socket?.emit("pause-consumer",data)
                         Log.d("socket","Consumer paused $data")
                         serviceCallback.toggleParticipantAudio(peerId, false)
                     } else {
                         val data = JSONObject().put("consumerId",serviceCallback.getVideoConsumer(peerId))
-                        socket.emit("pause-consumer",data)
+                        socket?.emit("pause-consumer",data)
                         serviceCallback.toggleParticipantVideo(peerId,false)
                     }
                 }
@@ -657,19 +868,19 @@ class SocketHandler(
     }
     private fun resumeProducerOfPeer(){
         try{
-            socket.on("producer-resumed") { args ->
+            socket?.on("producer-resumed") { args ->
                 val json = args[0] as JSONObject
                 val peerId = json.getString("peerId")
                 val kind = json.getString("kind")
                 coroutineScope.launch(Dispatchers.Main) {
                     if(kind == "audio") {
                         val data = JSONObject().put("consumerId",serviceCallback.getAudioConsumer(peerId))
-                        socket.emit("resume-consumer",data)
+                        socket?.emit("resume-consumer",data)
                         Log.d("socket","Consumer resumed $data")
                         serviceCallback.toggleParticipantAudio(peerId, true)
                     } else {
                         val data = JSONObject().put("consumerId",serviceCallback.getVideoConsumer(peerId))
-                        socket.emit("resume-consumer",data)
+                        socket?.emit("resume-consumer",data)
                         serviceCallback.toggleParticipantVideo(peerId,true)
                     }
                 }
@@ -681,7 +892,7 @@ class SocketHandler(
     fun sendMessage(message: String){
         val message = JSONObject().put("text",message)
         try{
-            socket.emit("message",message)
+            socket?.emit("message",message)
             Log.d("socket", "Message: $message")
         }catch (e: Exception) {
             Log.e("socket", "Error sending message: ${e.message}")
@@ -689,7 +900,7 @@ class SocketHandler(
     }
     private fun receiveMessage() {
         try {
-            socket.on("receive-message") { args ->
+            socket?.on("receive-message") { args ->
                 val data = args[0] as JSONObject
                 val senderPeerId = data.getString("peerId")
                 val text = data.getString("text")
@@ -705,7 +916,7 @@ class SocketHandler(
     }
     private  fun removeParticipant(){
         try{
-            socket.on("peer-disconnected") { args ->
+            socket?.on("peer-disconnected") { args ->
                 val data = args[0] as JSONObject
                 coroutineScope.launch(Dispatchers.Main) {
                     serviceCallback.removeParticipant(data.getString("peerId"))
@@ -717,7 +928,7 @@ class SocketHandler(
     }
     private fun handlePeerRequest(){
         Log.d("socket", "ask ")
-        socket.on("ask-to-join") { args ->
+        socket?.on("ask-to-join") { args ->
             try {
                 Log.d("socket", "asking ")
                 if (args.isNotEmpty()) {
@@ -738,7 +949,7 @@ class SocketHandler(
             put("to", requesterSocketId)
         }
         Log.d("socket","hRequest : $approved")
-        socket.emit("ask-to-join-response", response)
+        socket?.emit("ask-to-join-response", response)
     }
 
 
@@ -749,17 +960,27 @@ class SocketHandler(
             try {
                 sendTransport?.close()
                 recvTransport?.close()
-                socket.disconnect()
+                socket?.emit("disconnect-peer")
             } catch (e: Exception) {
                 Log.e("socket", "Error during endCall: ${e.message}")
             } finally {
                 sendTransport = null
                 recvTransport = null
-                socket.close()
+                callEnded = true
+                socket?.close()
+                socket = null
                 Log.d("socket", "Connection fully closed")
             }
         }
     }
 
+
+
 }
+enum class NetworkQuality {
+    LOW,
+    MEDIUM,
+    HIGH
+}
+
 
